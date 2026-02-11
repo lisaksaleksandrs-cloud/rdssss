@@ -2,15 +2,10 @@
     if (!window.Lampa) return;
 
     const RD = {
-        name: 'Real-Debrid Native',
         api: 'https://api.real-debrid.com/rest/1.0',
         client_id: 'X245A4XAIBGVM',
         token: Lampa.Storage.get('rd_token', null)
     };
-
-    function log() {
-        console.log('[RD]', ...arguments);
-    }
 
     function api(url, options = {}) {
         options.headers = options.headers || {};
@@ -22,8 +17,7 @@
         name = name.toLowerCase();
         return {
             dv: /dolby.?vision|dovi|dv/.test(name),
-            hdr10: /hdr10(?!\+)/.test(name),
-            hdr10plus: /hdr10\+|hdr10plus/.test(name)
+            hdr: /hdr/.test(name)
         };
     }
 
@@ -38,14 +32,14 @@
             timeline: true,
             player_params: {
                 dv: flags.dv,
-                hdr: flags.hdr10 || flags.hdr10plus,
+                hdr: flags.hdr,
                 codec: flags.dv ? 'dovi' : 'auto'
             }
         });
     }
 
     async function auth() {
-        Lampa.Loader.show('Real-Debrid auth');
+        Lampa.Loader.show('Real-Debrid');
 
         const code = await fetch(
             `${RD.api}/oauth/v2/device/code?client_id=${RD.client_id}&new_credentials=yes`
@@ -54,10 +48,8 @@
         Lampa.Modal.open({
             title: 'Real-Debrid',
             html: `
-                <div style="padding:1em">
-                    <div>Go to:</div>
-                    <b>${code.verification_url}</b>
-                    <div>Code:</div>
+                <div style="padding:1em;text-align:center">
+                    <div>${code.verification_url}</div>
                     <h2>${code.user_code}</h2>
                 </div>
             `
@@ -93,7 +85,7 @@
     }
 
     async function streamMagnet(magnet) {
-        Lampa.Loader.show('Sending magnet');
+        Lampa.Loader.show('Loading torrent');
 
         const add = await api('/torrents/addMagnet', {
             method: 'POST',
@@ -107,14 +99,15 @@
             await new Promise(r => setTimeout(r, 3000));
         } while (!info.files || !info.links || !info.links.length);
 
-        let bestFile = info.files.find(f => /dv|dolby.?vision/i.test(f.path))
-            || info.files.find(f => /hdr/i.test(f.path))
-            || info.files[0];
+        const file =
+            info.files.find(f => /dv|dolby/i.test(f.path)) ||
+            info.files.find(f => /hdr/i.test(f.path)) ||
+            info.files[0];
 
         await api('/torrents/selectFiles/' + add.id, {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: 'files=' + bestFile.id
+            body: 'files=' + file.id
         });
 
         const unlocked = await api('/unrestrict/link', {
@@ -129,54 +122,46 @@
         play(unlocked.download, unlocked.filename, flags);
     }
 
-    function openMagnetInput() {
+    function openMagnet() {
         Lampa.Modal.open({
             title: 'Magnet',
-            html: `<input id="rd_magnet" style="width:100%" placeholder="Paste magnet here">`,
-            buttons: [
-                {
-                    name: 'Play',
-                    onSelect: () => {
-                        const magnet = document.getElementById('rd_magnet').value;
-                        Lampa.Modal.close();
-                        streamMagnet(magnet);
-                    }
+            html: `<input id="rd_magnet" style="width:100%">`,
+            buttons: [{
+                name: 'Play',
+                onSelect: () => {
+                    const magnet = document.getElementById('rd_magnet').value;
+                    Lampa.Modal.close();
+                    streamMagnet(magnet);
                 }
-            ]
+            }]
         });
     }
 
-    function view() {
-        const html = $('<div class="rd-view"></div>');
-
+    function page() {
+        const html = $('<div class="rd-page"></div>');
         const authBtn = $('<div class="card">Authorize Real-Debrid</div>');
         const playBtn = $('<div class="card">Play Magnet</div>');
 
         authBtn.on('hover:enter', auth);
-        playBtn.on('hover:enter', openMagnetInput);
+        playBtn.on('hover:enter', openMagnet);
 
         html.append(authBtn, playBtn);
 
-        Lampa.Controller.add('rd_controller', {
+        Lampa.Controller.add('rd', {
             toggle: () => html.toggleClass('active'),
-            back: () => Lampa.Activity.back()
+            back: () => Lampa.Page.back()
         });
 
-        Lampa.Controller.enable('rd_controller');
+        Lampa.Controller.enable('rd');
         return html;
     }
 
-    Lampa.Plugin.create({
-        name: RD.name,
-        onLoad: function () {
-            Lampa.Activity.push({
-                url: 'rd',
+    Lampa.Menu.add({
+        title: 'Real-Debrid',
+        onSelect: () => {
+            Lampa.Page.open({
                 title: 'Real-Debrid',
-                component: 'rd',
-                type: 'category',
-                onCreate: function () {
-                    this.activity.render().find('.content').append(view());
-                }
+                content: page()
             });
         }
     });
