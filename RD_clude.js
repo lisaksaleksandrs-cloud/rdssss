@@ -1,299 +1,148 @@
 (function() {
     'use strict';
 
-    // Проверка доступности Lampa
-    if (typeof Lampa === 'undefined') {
-        console.error('[RealDebrid] Lampa не найдена!');
-        return;
-    }
-
+    // Конфигурация плагина
     var RealDebrid = {
         apiUrl: 'https://api.real-debrid.com/rest/1.0',
         token: '',
-        cache: {},
         settings: {
             enabled: false,
             autoSelect: true,
             preferredQuality: '1080p',
-            streaming: true,
-            cacheTimeout: 300000,
-            showNotifications: true,
-            debugMode: false
+            streaming: true
         }
     };
 
-    // Безопасное логирование
-    function log(message, data) {
-        if (RealDebrid.settings.debugMode) {
-            console.log('[RealDebrid] ' + message, data || '');
-        }
-    }
-
-    // Безопасное уведомление
-    function notify(message) {
-        try {
-            if (RealDebrid.settings.showNotifications && Lampa && Lampa.Noty) {
-                Lampa.Noty.show(message);
-            }
-        } catch(e) {
-            console.log('[RealDebrid] ' + message);
-        }
-        log(message);
-    }
-
     // Инициализация плагина
     function init() {
-        log('Запуск инициализации плагина');
+        console.log('[RealDebrid] Инициализация плагина');
         
-        try {
-            loadSettings();
-            setupUI();
-            hookIntoLampa();
-            log('Плагин успешно инициализирован');
-        } catch(error) {
-            console.error('[RealDebrid] Ошибка инициализации:', error);
+        // Загружаем настройки из хранилища
+        loadSettings();
+        
+        // Добавляем пункт в меню настроек
+        Lampa.SettingsApi.addComponent({
+            component: 'realdebrid',
+            name: 'Real-Debrid',
+            icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+        });
+
+        // Добавляем настройки плагина
+        Lampa.SettingsApi.addParam({
+            component: 'realdebrid',
+            param: {
+                name: 'realdebrid_enabled',
+                type: 'trigger',
+                default: false
+            },
+            field: {
+                name: 'Включить Real-Debrid',
+                description: 'Активировать интеграцию с Real-Debrid'
+            },
+            onChange: function(value) {
+                RealDebrid.settings.enabled = value;
+                saveSettings();
+            }
+        });
+
+        Lampa.SettingsApi.addParam({
+            component: 'realdebrid',
+            param: {
+                name: 'realdebrid_token',
+                type: 'input',
+                default: ''
+            },
+            field: {
+                name: 'API токен',
+                description: 'Введите ваш токен Real-Debrid API'
+            },
+            onChange: function(value) {
+                RealDebrid.token = value;
+                saveSettings();
+                if (value) {
+                    validateToken(value);
+                }
+            }
+        });
+
+        Lampa.SettingsApi.addParam({
+            component: 'realdebrid',
+            param: {
+                name: 'realdebrid_streaming',
+                type: 'trigger',
+                default: true
+            },
+            field: {
+                name: 'Режим стриминга',
+                description: 'Включить стриминг торрентов через Real-Debrid'
+            },
+            onChange: function(value) {
+                RealDebrid.settings.streaming = value;
+                saveSettings();
+            }
+        });
+
+        Lampa.SettingsApi.addParam({
+            component: 'realdebrid',
+            param: {
+                name: 'realdebrid_quality',
+                type: 'select',
+                values: {
+                    '2160p': '2160p (4K)',
+                    '1080p': '1080p (Full HD)',
+                    '720p': '720p (HD)',
+                    '480p': '480p (SD)'
+                },
+                default: '1080p'
+            },
+            field: {
+                name: 'Предпочитаемое качество',
+                description: 'Выбор качества для воспроизведения'
+            },
+            onChange: function(value) {
+                RealDebrid.settings.preferredQuality = value;
+                saveSettings();
+            }
+        });
+
+        // Интеграция с торрент-парсером Lampa
+        if (window.Lampa && Lampa.Torrent) {
+            hookTorrentParser();
         }
+
+        console.log('[RealDebrid] Плагин инициализирован');
     }
 
     // Загрузка настроек
     function loadSettings() {
-        try {
-            if (!Lampa.Storage) return;
-            
-            var stored = Lampa.Storage.get('realdebrid_settings');
-            if (stored && stored.settings) {
-                Object.assign(RealDebrid.settings, stored.settings);
-                RealDebrid.token = stored.token || '';
-                log('Настройки загружены', RealDebrid.settings);
-            }
-        } catch(error) {
-            console.error('[RealDebrid] Ошибка загрузки настроек:', error);
+        var stored = Lampa.Storage.get('realdebrid_settings');
+        if (stored) {
+            RealDebrid.settings = stored.settings || RealDebrid.settings;
+            RealDebrid.token = stored.token || '';
         }
     }
 
     // Сохранение настроек
     function saveSettings() {
-        try {
-            if (!Lampa.Storage) return;
-            
-            Lampa.Storage.set('realdebrid_settings', {
-                settings: RealDebrid.settings,
-                token: RealDebrid.token
-            });
-            log('Настройки сохранены');
-        } catch(error) {
-            console.error('[RealDebrid] Ошибка сохранения настроек:', error);
-        }
-    }
-
-    // Настройка интерфейса
-    function setupUI() {
-        try {
-            if (!Lampa.SettingsApi) {
-                log('Lampa.SettingsApi недоступен');
-                return;
-            }
-
-            // Добавляем раздел в настройки
-            Lampa.SettingsApi.addComponent({
-                component: 'realdebrid',
-                name: 'Real-Debrid',
-                icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M12 6v6l4 2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'
-            });
-
-            // Добавляем настройки
-            addSetting('realdebrid_enabled', 'trigger', false, 
-                'Включить Real-Debrid', 
-                'Активировать интеграцию с Real-Debrid', 
-                function(value) {
-                    RealDebrid.settings.enabled = value;
-                    saveSettings();
-                    if (value && !RealDebrid.token) {
-                        notify('⚠️ Установите API токен в настройках');
-                    }
-                }
-            );
-
-            addSetting('realdebrid_token', 'input', '', 
-                'API токен',
-                'Токен от real-debrid.com/apitoken', 
-                function(value) {
-                    RealDebrid.token = value ? value.trim() : '';
-                    saveSettings();
-                    if (RealDebrid.token) {
-                        validateToken(RealDebrid.token);
-                    }
-                }
-            );
-
-            addSetting('realdebrid_streaming', 'trigger', true, 
-                'Режим стриминга',
-                'Включить прямой стриминг торрентов', 
-                function(value) {
-                    RealDebrid.settings.streaming = value;
-                    saveSettings();
-                }
-            );
-
-            addSetting('realdebrid_quality', 'select', '1080p', 
-                'Предпочитаемое качество',
-                'Приоритет качества видео', 
-                function(value) {
-                    RealDebrid.settings.preferredQuality = value;
-                    saveSettings();
-                },
-                {
-                    '2160p': '2160p (4K UHD)',
-                    '1080p': '1080p (Full HD)',
-                    '720p': '720p (HD)',
-                    '480p': '480p (SD)'
-                }
-            );
-
-            addSetting('realdebrid_autoselect', 'trigger', true, 
-                'Автовыбор файлов',
-                'Автоматически выбирать лучший файл', 
-                function(value) {
-                    RealDebrid.settings.autoSelect = value;
-                    saveSettings();
-                }
-            );
-
-            addSetting('realdebrid_notifications', 'trigger', true, 
-                'Уведомления',
-                'Показывать уведомления о статусе', 
-                function(value) {
-                    RealDebrid.settings.showNotifications = value;
-                    saveSettings();
-                }
-            );
-
-            addSetting('realdebrid_debug', 'trigger', false, 
-                'Режим отладки',
-                'Включить подробное логирование', 
-                function(value) {
-                    RealDebrid.settings.debugMode = value;
-                    saveSettings();
-                }
-            );
-
-            // Кнопка проверки аккаунта
-            Lampa.SettingsApi.addParam({
-                component: 'realdebrid',
-                param: {
-                    name: 'realdebrid_check',
-                    type: 'button'
-                },
-                field: {
-                    name: 'Проверить аккаунт',
-                    description: 'Проверить статус Real-Debrid'
-                },
-                onSelect: function() {
-                    checkAccount();
-                }
-            });
-
-            // Кнопка очистки кэша
-            Lampa.SettingsApi.addParam({
-                component: 'realdebrid',
-                param: {
-                    name: 'realdebrid_clear',
-                    type: 'button'
-                },
-                field: {
-                    name: 'Очистить кэш',
-                    description: 'Удалить кэшированные данные'
-                },
-                onSelect: function() {
-                    RealDebrid.cache = {};
-                    notify('✓ Кэш очищен');
-                }
-            });
-
-            log('UI настроен успешно');
-        } catch(error) {
-            console.error('[RealDebrid] Ошибка настройки UI:', error);
-        }
-    }
-
-    // Вспомогательная функция добавления настроек
-    function addSetting(name, type, defaultValue, title, description, onChange, values) {
-        try {
-            if (!Lampa.SettingsApi) return;
-
-            var param = {
-                name: name,
-                type: type,
-                default: defaultValue
-            };
-
-            if (values) {
-                param.values = values;
-            }
-
-            Lampa.SettingsApi.addParam({
-                component: 'realdebrid',
-                param: param,
-                field: {
-                    name: title,
-                    description: description
-                },
-                onChange: onChange
-            });
-        } catch(error) {
-            console.error('[RealDebrid] Ошибка добавления настройки ' + name + ':', error);
-        }
+        Lampa.Storage.set('realdebrid_settings', {
+            settings: RealDebrid.settings,
+            token: RealDebrid.token
+        });
     }
 
     // Проверка токена
     function validateToken(token) {
         apiRequest('/user', function(result) {
-            if (result.success && result.data) {
-                var user = result.data;
-                var msg = '✓ Подключено к Real-Debrid\n' +
-                         'Пользователь: ' + (user.username || 'Unknown');
-                
-                if (user.expiration) {
-                    var expiry = new Date(user.expiration);
-                    var days = Math.ceil((expiry - new Date()) / (1000 * 60 * 60 * 24));
-                    msg += '\nПодписка: ' + days + ' дней';
-                }
-                
-                notify(msg);
+            if (result.success) {
+                Lampa.Noty.show('Real-Debrid: Подключено. Пользователь: ' + result.data.username);
+                console.log('[RealDebrid] Токен валидный:', result.data);
             } else {
-                notify('✗ Ошибка токена: ' + (result.error || 'Неверный токен'));
-                RealDebrid.settings.enabled = false;
-                saveSettings();
+                Lampa.Noty.show('Real-Debrid: Ошибка токена - ' + (result.error || 'Неверный токен'));
             }
         }, token);
     }
 
-    // Проверка аккаунта
-    function checkAccount() {
-        if (!RealDebrid.token) {
-            notify('⚠️ Токен не установлен');
-            return;
-        }
-
-        apiRequest('/user', function(result) {
-            if (result.success && result.data) {
-                var u = result.data;
-                var info = 'Аккаунт: ' + (u.username || 'Unknown') + '\n' +
-                          'Тип: ' + (u.type || 'unknown') + '\n' +
-                          'Точек: ' + (u.points || 0);
-                
-                if (u.expiration) {
-                    info += '\nДо: ' + new Date(u.expiration).toLocaleDateString();
-                }
-                
-                notify(info);
-            } else {
-                notify('Ошибка: ' + (result.error || 'Не удалось получить данные'));
-            }
-        });
-    }
-
-    // API запрос
+    // API запрос к Real-Debrid
     function apiRequest(endpoint, callback, customToken) {
         var token = customToken || RealDebrid.token;
         
@@ -304,47 +153,27 @@
 
         var url = RealDebrid.apiUrl + endpoint;
         
-        // Проверка кэша
-        if (RealDebrid.cache[url]) {
-            var cached = RealDebrid.cache[url];
-            if (Date.now() - cached.timestamp < RealDebrid.settings.cacheTimeout) {
-                callback({ success: true, data: cached.data, cached: true });
-                return;
-            }
-        }
-
-        log('GET ' + endpoint);
-
-        try {
-            fetch(url, {
-                method: 'GET',
-                headers: {
-                    'Authorization': 'Bearer ' + token
-                }
-            })
-            .then(function(response) {
-                if (!response.ok) {
-                    throw new Error('HTTP ' + response.status);
-                }
-                return response.json();
-            })
-            .then(function(data) {
-                RealDebrid.cache[url] = {
-                    data: data,
-                    timestamp: Date.now()
-                };
+        Lampa.Utils.ajax({
+            url: url,
+            method: 'GET',
+            headers: {
+                'Authorization': 'Bearer ' + token
+            },
+            success: function(data) {
                 callback({ success: true, data: data });
-            })
-            .catch(function(error) {
-                log('API Error: ' + error.message);
-                callback({ success: false, error: error.message });
-            });
-        } catch(error) {
-            callback({ success: false, error: error.message });
-        }
+            },
+            error: function(error) {
+                console.error('[RealDebrid] API Error:', error);
+                callback({ 
+                    success: false, 
+                    error: error.statusText || 'Network error',
+                    status: error.status
+                });
+            }
+        });
     }
 
-    // POST запрос
+    // POST запрос к API
     function apiPost(endpoint, data, callback) {
         if (!RealDebrid.token) {
             callback({ success: false, error: 'Токен не установлен' });
@@ -353,260 +182,312 @@
 
         var url = RealDebrid.apiUrl + endpoint;
         
-        // Формируем форм-дата
-        var formData = [];
-        for (var key in data) {
-            if (data.hasOwnProperty(key)) {
-                formData.push(encodeURIComponent(key) + '=' + encodeURIComponent(data[key]));
+        Lampa.Utils.ajax({
+            url: url,
+            method: 'POST',
+            headers: {
+                'Authorization': 'Bearer ' + RealDebrid.token,
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            data: data,
+            success: function(response) {
+                callback({ success: true, data: response });
+            },
+            error: function(error) {
+                console.error('[RealDebrid] API POST Error:', error);
+                callback({ 
+                    success: false, 
+                    error: error.statusText || 'Network error'
+                });
             }
-        }
-        var body = formData.join('&');
-
-        log('POST ' + endpoint);
-
-        try {
-            fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Authorization': 'Bearer ' + RealDebrid.token,
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                },
-                body: body
-            })
-            .then(function(response) {
-                if (!response.ok) {
-                    throw new Error('HTTP ' + response.status);
-                }
-                return response.json();
-            })
-            .then(function(data) {
-                callback({ success: true, data: data });
-            })
-            .catch(function(error) {
-                log('POST Error: ' + error.message);
-                callback({ success: false, error: error.message });
-            });
-        } catch(error) {
-            callback({ success: false, error: error.message });
-        }
+        });
     }
 
-    // Интеграция с Lampa
-    function hookIntoLampa() {
-        try {
-            if (!Lampa.Listener) {
-                log('Lampa.Listener недоступен');
+    // Добавление торрента в Real-Debrid
+    function addTorrent(magnetLink, callback) {
+        console.log('[RealDebrid] Добавление торрента:', magnetLink);
+        
+        apiPost('/torrents/addMagnet', { magnet: magnetLink }, function(result) {
+            if (result.success) {
+                console.log('[RealDebrid] Торрент добавлен:', result.data);
+                callback({ success: true, torrentId: result.data.id });
+            } else {
+                callback({ success: false, error: result.error });
+            }
+        });
+    }
+
+    // Получение информации о торренте
+    function getTorrentInfo(torrentId, callback) {
+        apiRequest('/torrents/info/' + torrentId, function(result) {
+            if (result.success) {
+                callback({ success: true, data: result.data });
+            } else {
+                callback({ success: false, error: result.error });
+            }
+        });
+    }
+
+    // Выбор файлов для скачивания
+    function selectFiles(torrentId, fileIds, callback) {
+        var data = { files: fileIds };
+        
+        apiPost('/torrents/selectFiles/' + torrentId, data, function(result) {
+            callback(result);
+        });
+    }
+
+    // Разблокировка ссылки для стриминга
+    function unrestrict(link, callback) {
+        console.log('[RealDebrid] Разблокировка ссылки:', link);
+        
+        apiPost('/unrestrict/link', { link: link }, function(result) {
+            if (result.success) {
+                console.log('[RealDebrid] Ссылка разблокирована:', result.data.download);
+                callback({ 
+                    success: true, 
+                    url: result.data.download,
+                    filename: result.data.filename
+                });
+            } else {
+                callback({ success: false, error: result.error });
+            }
+        });
+    }
+
+    // Обработка торрента и получение стрим-ссылки
+    function processTorrent(magnetLink, callback) {
+        if (!RealDebrid.settings.enabled || !RealDebrid.token) {
+            callback({ success: false, error: 'Real-Debrid не настроен' });
+            return;
+        }
+
+        Lampa.Noty.show('Real-Debrid: Обработка торрента...');
+
+        // Шаг 1: Добавляем торрент
+        addTorrent(magnetLink, function(addResult) {
+            if (!addResult.success) {
+                Lampa.Noty.show('Ошибка добавления торрента: ' + addResult.error);
+                callback(addResult);
                 return;
             }
 
-            log('Подключение к событиям Lampa');
+            var torrentId = addResult.torrentId;
 
-            // Слушаем события
-            Lampa.Listener.follow('torrent', function(e) {
-                try {
-                    if (!RealDebrid.settings.enabled || !RealDebrid.settings.streaming) {
+            // Шаг 2: Получаем информацию о торренте
+            setTimeout(function() {
+                getTorrentInfo(torrentId, function(infoResult) {
+                    if (!infoResult.success) {
+                        callback(infoResult);
                         return;
                     }
+
+                    var torrentData = infoResult.data;
                     
-                    if (e && e.method === 'play' && e.data && e.data.magnet) {
-                        log('Перехвачен торрент');
-                        if (e.preventDefault) e.preventDefault();
-                        handleTorrent(e.data.magnet, e.data);
-                    }
-                } catch(error) {
-                    console.error('[RealDebrid] Ошибка обработки события:', error);
-                }
-            });
+                    // Шаг 3: Выбираем файлы для скачивания
+                    if (torrentData.status === 'waiting_files_selection') {
+                        var fileIds = selectBestFiles(torrentData.files);
+                        
+                        selectFiles(torrentId, fileIds, function(selectResult) {
+                            if (!selectResult.success) {
+                                callback(selectResult);
+                                return;
+                            }
 
-            log('События подключены');
-        } catch(error) {
-            console.error('[RealDebrid] Ошибка подключения событий:', error);
-        }
-    }
-
-    // Обработка торрента
-    function handleTorrent(magnet, metadata) {
-        if (!RealDebrid.token) {
-            notify('⚠️ Настройте токен Real-Debrid');
-            return;
-        }
-
-        log('Обработка торрента');
-        notify('Real-Debrid: Обработка...');
-
-        processTorrent(magnet, function(result) {
-            if (result.success && result.streams && result.streams.length > 0) {
-                if (RealDebrid.settings.autoSelect) {
-                    var best = selectBestStream(result.streams);
-                    playStream(best, metadata);
-                } else {
-                    showSelector(result.streams, metadata);
-                }
-            } else {
-                notify('Ошибка: ' + (result.error || 'Нет файлов'));
-            }
-        });
-    }
-
-    // Обработка торрента
-    function processTorrent(magnet, callback) {
-        apiPost('/torrents/addMagnet', { magnet: magnet }, function(result) {
-            if (!result.success) {
-                callback(result);
-                return;
-            }
-
-            var id = result.data.id;
-            log('Торрент добавлен: ' + id);
-
-            setTimeout(function() {
-                checkStatus(id, callback, 0);
-            }, 1500);
-        });
-    }
-
-    // Проверка статуса
-    function checkStatus(id, callback, attempt) {
-        if (attempt > 40) {
-            callback({ success: false, error: 'Таймаут' });
-            return;
-        }
-
-        apiRequest('/torrents/info/' + id, function(result) {
-            if (!result.success) {
-                callback(result);
-                return;
-            }
-
-            var torrent = result.data;
-            var status = torrent.status;
-            
-            log('Статус: ' + status + ' (' + (attempt + 1) + ')');
-
-            if (status === 'waiting_files_selection') {
-                selectFiles(id, torrent.files, function(selectResult) {
-                    if (selectResult.success) {
-                        setTimeout(function() {
-                            checkStatus(id, callback, attempt + 1);
-                        }, 2000);
+                            // Ждем завершения обработки
+                            waitForDownloadReady(torrentId, callback);
+                        });
+                    } else if (torrentData.status === 'downloaded') {
+                        // Торрент уже скачан
+                        getStreamLinks(torrentData, callback);
                     } else {
-                        callback(selectResult);
+                        // Ждем завершения
+                        waitForDownloadReady(torrentId, callback);
                     }
                 });
-            } else if (status === 'downloaded') {
-                notify('Real-Debrid: Готово!');
-                getLinks(torrent, callback);
-            } else if (status === 'downloading' || status === 'queued') {
-                var progress = torrent.progress || 0;
-                if (attempt % 3 === 0) {
-                    notify('Загрузка: ' + progress + '%');
-                }
-                setTimeout(function() {
-                    checkStatus(id, callback, attempt + 1);
-                }, 2000);
-            } else if (status === 'error' || status === 'virus' || status === 'dead') {
-                callback({ success: false, error: 'Ошибка: ' + status });
-            } else {
-                setTimeout(function() {
-                    checkStatus(id, callback, attempt + 1);
-                }, 2000);
-            }
+            }, 1000);
         });
     }
 
-    // Выбор файлов
-    function selectFiles(id, files, callback) {
-        if (!files || files.length === 0) {
-            apiPost('/torrents/selectFiles/' + id, { files: 'all' }, callback);
+    // Ожидание готовности торрента
+    function waitForDownloadReady(torrentId, callback, attempt) {
+        attempt = attempt || 0;
+        
+        if (attempt > 30) {
+            callback({ success: false, error: 'Таймаут обработки торрента' });
             return;
         }
 
-        var videoExts = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'm4v', 'webm', 'ts'];
-        var videoFiles = files.filter(function(f) {
-            var ext = (f.path || '').split('.').pop().toLowerCase();
-            return videoExts.indexOf(ext) !== -1 && f.bytes > 50 * 1024 * 1024;
+        setTimeout(function() {
+            getTorrentInfo(torrentId, function(result) {
+                if (!result.success) {
+                    callback(result);
+                    return;
+                }
+
+                var status = result.data.status;
+                console.log('[RealDebrid] Статус торрента:', status, 'попытка', attempt);
+
+                if (status === 'downloaded') {
+                    Lampa.Noty.show('Real-Debrid: Торрент готов к просмотру');
+                    getStreamLinks(result.data, callback);
+                } else if (status === 'downloading' || status === 'queued') {
+                    var progress = result.data.progress || 0;
+                    Lampa.Noty.show('Real-Debrid: Скачивание ' + progress + '%');
+                    waitForDownloadReady(torrentId, callback, attempt + 1);
+                } else if (status === 'error' || status === 'virus' || status === 'dead') {
+                    callback({ success: false, error: 'Ошибка торрента: ' + status });
+                } else {
+                    waitForDownloadReady(torrentId, callback, attempt + 1);
+                }
+            });
+        }, 2000);
+    }
+
+    // Выбор лучших файлов из торрента
+    function selectBestFiles(files) {
+        if (!files || files.length === 0) return 'all';
+
+        // Фильтруем видео файлы
+        var videoFiles = files.filter(function(file) {
+            var ext = file.path.split('.').pop().toLowerCase();
+            return ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'm4v'].indexOf(ext) !== -1;
         });
 
         if (videoFiles.length === 0) {
-            apiPost('/torrents/selectFiles/' + id, { files: 'all' }, callback);
-            return;
+            // Выбираем все файлы если видео не найдено
+            return 'all';
         }
 
-        videoFiles.sort(function(a, b) { return b.bytes - a.bytes; });
-        var ids = videoFiles.slice(0, 10).map(function(f) { return f.id; }).join(',');
-        
-        apiPost('/torrents/selectFiles/' + id, { files: ids }, callback);
+        // Сортируем по размеру (больше = лучше качество)
+        videoFiles.sort(function(a, b) {
+            return b.bytes - a.bytes;
+        });
+
+        // Выбираем самые большие файлы
+        var selectedIds = videoFiles.slice(0, Math.min(5, videoFiles.length)).map(function(f) {
+            return f.id;
+        }).join(',');
+
+        return selectedIds;
     }
 
-    // Получение ссылок
-    function getLinks(torrent, callback) {
-        if (!torrent.links || torrent.links.length === 0) {
-            callback({ success: false, error: 'Нет ссылок' });
+    // Получение ссылок для стриминга
+    function getStreamLinks(torrentData, callback) {
+        if (!torrentData.links || torrentData.links.length === 0) {
+            callback({ success: false, error: 'Нет доступных ссылок' });
             return;
         }
 
-        var links = torrent.links;
-        var streams = [];
-        var done = 0;
+        var links = torrentData.links;
+        var streamUrls = [];
+        var processed = 0;
 
+        // Разблокируем каждую ссылку
         links.forEach(function(link) {
-            apiPost('/unrestrict/link', { link: link }, function(result) {
-                done++;
+            unrestrict(link, function(result) {
+                processed++;
                 
-                if (result.success && result.data) {
-                    streams.push({
-                        url: result.data.download,
-                        filename: result.data.filename || 'video',
-                        quality: detectQuality(result.data.filename || ''),
-                        size: result.data.filesize || 0
+                if (result.success) {
+                    streamUrls.push({
+                        url: result.url,
+                        filename: result.filename,
+                        quality: detectQuality(result.filename)
                     });
                 }
 
-                if (done === links.length) {
-                    if (streams.length > 0) {
-                        streams.sort(function(a, b) {
-                            var qOrder = { '2160p': 4, '1080p': 3, '720p': 2, '480p': 1 };
-                            var qDiff = (qOrder[b.quality] || 0) - (qOrder[a.quality] || 0);
-                            return qDiff !== 0 ? qDiff : b.size - a.size;
+                // Когда все ссылки обработаны
+                if (processed === links.length) {
+                    if (streamUrls.length > 0) {
+                        // Сортируем по качеству
+                        streamUrls.sort(function(a, b) {
+                            var qualityOrder = { '2160p': 4, '1080p': 3, '720p': 2, '480p': 1 };
+                            return (qualityOrder[b.quality] || 0) - (qualityOrder[a.quality] || 0);
                         });
-                        callback({ success: true, streams: streams });
+
+                        callback({ 
+                            success: true, 
+                            streams: streamUrls,
+                            torrentData: torrentData
+                        });
                     } else {
-                        callback({ success: false, error: 'Не удалось получить ссылки' });
+                        callback({ success: false, error: 'Не удалось разблокировать ссылки' });
                     }
                 }
             });
         });
     }
 
-    // Определение качества
-    function detectQuality(name) {
-        var n = (name || '').toLowerCase();
-        if (n.indexOf('2160p') !== -1 || n.indexOf('4k') !== -1) return '2160p';
-        if (n.indexOf('1080p') !== -1) return '1080p';
-        if (n.indexOf('720p') !== -1) return '720p';
-        if (n.indexOf('480p') !== -1) return '480p';
-        return '1080p';
+    // Определение качества из имени файла
+    function detectQuality(filename) {
+        var name = filename.toLowerCase();
+        
+        if (name.indexOf('2160p') !== -1 || name.indexOf('4k') !== -1) return '2160p';
+        if (name.indexOf('1080p') !== -1) return '1080p';
+        if (name.indexOf('720p') !== -1) return '720p';
+        if (name.indexOf('480p') !== -1) return '480p';
+        
+        return '1080p'; // по умолчанию
     }
 
-    // Выбор лучшего
-    function selectBestStream(streams) {
-        var pref = RealDebrid.settings.preferredQuality;
-        var match = streams.find(function(s) { return s.quality === pref; });
-        return match || streams[0];
+    // Интеграция с парсером торрентов Lampa
+    function hookTorrentParser() {
+        console.log('[RealDebrid] Подключение к торрент-парсеру');
+
+        // Перехватываем обработку торрентов
+        var originalParser = Lampa.Activity.active().activity;
+        
+        Lampa.Listener.follow('torrent', function(e) {
+            if (e.method === 'play' && RealDebrid.settings.enabled && RealDebrid.settings.streaming) {
+                handleTorrentPlay(e.data);
+            }
+        });
     }
 
-    // Показ селектора
-    function showSelector(streams, metadata) {
-        if (!Lampa.Select) {
-            playStream(streams[0], metadata);
+    // Обработка воспроизведения торрента
+    function handleTorrentPlay(data) {
+        if (!data || !data.magnet) {
+            console.log('[RealDebrid] Нет magnet ссылки');
             return;
         }
 
-        var items = streams.map(function(s) {
-            var size = s.size ? ' (' + formatSize(s.size) + ')' : '';
+        console.log('[RealDebrid] Обработка воспроизведения торрента');
+
+        processTorrent(data.magnet, function(result) {
+            if (result.success && result.streams.length > 0) {
+                // Показываем список качеств или запускаем лучшее
+                if (RealDebrid.settings.autoSelect) {
+                    playStream(result.streams[0].url);
+                } else {
+                    showStreamSelector(result.streams);
+                }
+            } else {
+                Lampa.Noty.show('Ошибка Real-Debrid: ' + (result.error || 'Неизвестная ошибка'));
+            }
+        });
+    }
+
+    // Воспроизведение потока
+    function playStream(url) {
+        console.log('[RealDebrid] Запуск стрима:', url);
+        
+        var player = {
+            url: url,
+            title: 'Real-Debrid Stream',
+            quality: true
+        };
+
+        Lampa.Player.play(player);
+        Lampa.Player.playlist([player]);
+    }
+
+    // Показ селектора качества
+    function showStreamSelector(streams) {
+        var items = streams.map(function(stream) {
             return {
-                title: s.quality + ' - ' + s.filename + size,
-                stream: s
+                title: stream.quality + ' - ' + stream.filename,
+                url: stream.url,
+                quality: stream.quality
             };
         });
 
@@ -614,71 +495,30 @@
             title: 'Выберите качество',
             items: items,
             onSelect: function(item) {
-                playStream(item.stream, metadata);
+                playStream(item.url);
             },
             onBack: function() {
-                if (Lampa.Controller) {
-                    Lampa.Controller.toggle('content');
-                }
+                Lampa.Controller.toggle('content');
             }
         });
     }
 
-    // Форматирование размера
-    function formatSize(bytes) {
-        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
-        if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-        return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-    }
-
-    // Воспроизведение
-    function playStream(stream, metadata) {
-        if (!Lampa.Player) {
-            log('Lampa.Player недоступен');
-            return;
-        }
-
-        log('Запуск: ' + stream.url);
-        notify('▶ ' + stream.quality + ' - ' + stream.filename);
-
-        var player = {
-            url: stream.url,
-            title: (metadata && metadata.title) || stream.filename,
-            quality: stream.quality
-        };
-
-        try {
-            Lampa.Player.play(player);
-            Lampa.Player.playlist([player]);
-        } catch(error) {
-            console.error('[RealDebrid] Ошибка запуска плеера:', error);
-            notify('Ошибка воспроизведения');
-        }
-    }
-
-    // Публичный API
+    // Создаем публичный API плагина
     window.RealDebridPlugin = {
         init: init,
         processTorrent: processTorrent,
-        settings: RealDebrid.settings,
-        version: '1.1.0'
+        addTorrent: addTorrent,
+        unrestrict: unrestrict,
+        settings: RealDebrid.settings
     };
 
-    // Автозапуск
-    if (Lampa && Lampa.Listener) {
+    // Автозапуск при загрузке Lampa
+    if (window.Lampa) {
         Lampa.Listener.follow('app', function(e) {
-            if (e && e.type === 'ready') {
+            if (e.type === 'ready') {
                 init();
             }
         });
     }
-
-    // Fallback
-    setTimeout(function() {
-        if (!window.RealDebridPlugin._initialized) {
-            init();
-            window.RealDebridPlugin._initialized = true;
-        }
-    }, 2000);
 
 })();
